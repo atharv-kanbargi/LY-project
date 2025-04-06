@@ -2,6 +2,7 @@ import React, { useEffect, useState, useContext } from 'react';
 import { assets } from '../../assets/assets';
 import { AdminContext } from '../../context/AdminContext';
 import { AppContext } from '../../context/AppContext';
+import { PieChart, Pie, Cell, ResponsiveContainer, Legend, Tooltip } from 'recharts';
 
 const AllAppointments = () => {
   const { aToken, appointments, cancelAppointment, getAllAppointments } = useContext(AdminContext);
@@ -33,10 +34,39 @@ const AllAppointments = () => {
 
   const [filters, setFilters] = useState(initialFilters);
   const [filteredAppointments, setFilteredAppointments] = useState(appointments);
+  const [statusData, setStatusData] = useState([]);
 
-  // Whenever appointments data is updated, refresh the filtered list (default: no filters applied)
+  // Whenever appointments data is updated, refresh the filtered list and status chart data
   useEffect(() => {
     setFilteredAppointments(appointments);
+    
+    // Calculate status counts for the pie chart
+    if (appointments && appointments.length > 0) {
+      const statusCounts = {
+        completed: 0,
+        cancelled: 0,
+        pending: 0
+      };
+      
+      appointments.forEach(appointment => {
+        if (appointment.cancelled) {
+          statusCounts.cancelled++;
+        } else if (appointment.isCompleted) {
+          statusCounts.completed++;
+        } else {
+          statusCounts.pending++;
+        }
+      });
+      
+      // Format data for pie chart
+      const chartData = [
+        { name: 'Completed', value: statusCounts.completed },
+        { name: 'Cancelled', value: statusCounts.cancelled },
+        { name: 'Pending', value: statusCounts.pending }
+      ];
+      
+      setStatusData(chartData);
+    }
   }, [appointments]);
 
   // Handler to update search results based on filters
@@ -76,6 +106,9 @@ const AllAppointments = () => {
     });
     setFilteredAppointments(filtered);
   };
+
+  // Colors for pie chart segments
+  const COLORS = ['#4CAF50', '#F44336', '#2196F3'];
 
   return (
     <div className='w-full max-w-6xl m-5'>
@@ -226,6 +259,63 @@ const AllAppointments = () => {
           </div>
         ))}
       </div>
+
+      {/* Pie Chart for Appointment Status */}
+      {statusData.length > 0 && (
+        <div className="bg-white p-4 rounded border mt-4 w-full">
+          <h3 className='font-semibold mb-4 text-center'>Appointment Status Distribution</h3>
+          
+          <div className="flex flex-col md:flex-row items-center">
+            <div className="w-full md:w-2/3 h-64">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={statusData}
+                    cx="50%"
+                    cy="50%"
+                    labelLine={false}
+                    outerRadius={80}
+                    fill="#8884d8"
+                    dataKey="value"
+                    label={({ name, percent }) => `${name}: ${(percent * 100).toFixed(0)}%`}
+                  >
+                    {statusData.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip formatter={(value) => [`${value} appointments`, 'Count']} />
+                  <Legend />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            
+            <div className="w-full md:w-1/3 mt-4 md:mt-0">
+              <div className="space-y-4">
+                {statusData.map((status, index) => (
+                  <div key={index} className="flex items-center">
+                    <div
+                      className="w-4 h-4 mr-2 rounded-full"
+                      style={{ backgroundColor: COLORS[index % COLORS.length] }}
+                    ></div>
+                    <div className="flex justify-between w-full">
+                      <span className="font-medium">{status.name}:</span>
+                      <span className="font-bold">{status.value}</span>
+                    </div>
+                  </div>
+                ))}
+                <div className="pt-2 border-t mt-2">
+                  <div className="flex justify-between w-full">
+                    <span className="font-medium">Total:</span>
+                    <span className="font-bold">
+                      {statusData.reduce((sum, item) => sum + item.value, 0)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

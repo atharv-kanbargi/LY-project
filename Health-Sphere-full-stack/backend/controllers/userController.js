@@ -7,6 +7,7 @@ import appointmentModel from "../models/appointmentModel.js";
 import { v2 as cloudinary } from 'cloudinary'
 import stripe from "stripe";
 import razorpay from 'razorpay';
+import nodemailer from 'nodemailer';
 
 // Gateway Initialize
 // const stripeInstance = new stripe(process.env.STRIPE_SECRET_KEY)
@@ -15,9 +16,7 @@ import razorpay from 'razorpay';
 //     key_secret: process.env.RAZORPAY_KEY_SECRET,
 // })
 
-// API to register user
 const registerUser = async (req, res) => {
-
     try {
         const { name, email, password } = req.body;
 
@@ -36,51 +35,245 @@ const registerUser = async (req, res) => {
             return res.json({ success: false, message: "Please enter a strong password" })
         }
 
+        // Check if user with this email already exists
+        const existingUser = await userModel.findOne({ email });
+        if (existingUser) {
+            return res.json({ success: false, message: "User with this email already exists" });
+        }
+
         // hashing user password
-        const salt = await bcrypt.genSalt(10); // the more no. round the more time it will take
-        const hashedPassword = await bcrypt.hash(password, salt)
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(password, salt);
+
+        // Generate OTP (6-digit number)
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiry = new Date();
+        otpExpiry.setMinutes(otpExpiry.getMinutes() + 10); // OTP valid for 10 minutes
 
         const userData = {
             name,
             email,
             password: hashedPassword,
+            isVerified: false,
+            otp,
+            otpExpiry,
         }
 
-        const newUser = new userModel(userData)
-        const user = await newUser.save()
-        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET)
+        const newUser = new userModel(userData);
+        const user = await newUser.save();
 
-        res.json({ success: true, token })
+        // Send OTP to user's email
+        const emailResult = await sendVerificationEmail(email, name, otp);
+        
+        // For testing purposes, include the preview URL in the response
+        const responseData = { 
+            success: true, 
+            message: "Please verify your email. An OTP has been sent to your email address.",
+            userId: user._id
+        };
+        
+        if (emailResult.previewUrl) {
+            responseData.previewUrl = emailResult.previewUrl;
+        }
+
+        res.json(responseData);
 
     } catch (error) {
-        console.log(error)
-        res.json({ success: false, message: error.message })
+        console.log(error);
+        res.json({ success: false, message: error.message });
     }
 }
 
-// API to login user
-const loginUser = async (req, res) => {
+// New endpoint to verify OTP
+const verifyEmail = async (req, res) => {
+    try {
+        const { userId, otp } = req.body;
 
+        if (!userId || !otp) {
+            return res.json({ success: false, message: 'Missing Details' });
+        }
+
+        const user = await userModel.findById(userId);
+        if (!user) {
+            return res.json({ success: false, message: 'User not found' });
+        }
+
+        // Check if OTP is expired
+        if (new Date() > new Date(user.otpExpiry)) {
+            return res.json({ success: false, message: 'OTP expired. Please request a new one.' });
+        }
+
+        // Check if OTP matches
+        if (user.otp !== otp) {
+            return res.json({ success: false, message: 'Invalid OTP' });
+        }
+
+        // Mark user as verified
+        user.isVerified = true;
+        user.otp = undefined;
+        user.otpExpiry = undefined;
+        await user.save();
+
+        // Generate JWT token
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+
+        res.json({ success: true, message: 'Email verified successfully', token });
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// Endpoint to resend OTP
+const resendOTP = async (req, res) => {
+    try {
+        const { userId } = req.body;
+
+        if (!userId) {
+            return res.json({ success: false, message: 'User ID is required' });
+        }
+
+        const user = await userModel.findById(userId);
+        if (!user) {
+            return res.json({ success: false, message: 'User not found' });
+        }
+
+        // Generate new OTP
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiry = new Date();
+        otpExpiry.setMinutes(otpExpiry.getMinutes() + 10); // OTP valid for 10 minutes
+
+        user.otp = otp;
+        user.otpExpiry = otpExpiry;
+        await user.save();
+
+        // Send new OTP to user's email
+        const emailResult = await sendVerificationEmail(user.email, user.name, otp);
+        
+        // For testing purposes, include the preview URL in the response
+        const responseData = {
+            success: true,
+            message: 'New OTP has been sent to your email address'
+        };
+        
+        if (emailResult.previewUrl) {
+            responseData.previewUrl = emailResult.previewUrl;
+        }
+
+        res.json(responseData);
+
+    } catch (error) {
+        console.log(error);
+        res.json({ success: false, message: error.message });
+    }
+}
+
+// Function to send verification email - Using Ethereal for local testing
+const sendVerificationEmail = async (email, name, otp) => {
+    try {
+        // Create a test account on the fly with Ethereal
+        const testAccount = await nodemailer.createTestAccount();
+        
+        // Log the credentials and preview URL for testing
+        console.log('Test email account created:', testAccount.user);
+        
+        // Create a transporter using Ethereal SMTP details
+        const transporter = nodemailer.createTransport({
+            host: 'smtp.ethereal.email',
+            port: 587,
+            secure: false, // true for 465, false for other ports
+            auth: {
+                user: testAccount.user,
+                pass: testAccount.pass
+            }
+        });
+
+        const mailOptions = {
+            from: '"Your App" <test@example.com>',
+            to: email,
+            subject: 'Email Verification OTP',
+            html: `
+                <h1>Email Verification</h1>
+                <p>Hello ${name},</p>
+                <p>Thank you for registering. Please use the following OTP to verify your email:</p>
+                <h2>${otp}</h2>
+                <p>This OTP is valid for 10 minutes.</p>
+            `
+        };
+
+        // Send mail with defined transport object
+        const info = await transporter.sendMail(mailOptions);
+        
+        // Log the Ethereal URL where you can preview the email
+        console.log('OTP Email sent to %s', email);
+        console.log('Preview URL: %s', nodemailer.getTestMessageUrl(info));
+        
+        // For local testing: Print the OTP to console so you don't need to check the email
+        console.log('OTP for testing:', otp);
+        
+        return { success: true, previewUrl: nodemailer.getTestMessageUrl(info) };
+    } catch (error) {
+        console.error('Error sending email:', error);
+        // Continue the flow even if email fails during testing
+        console.log('OTP for testing (email failed):', otp);
+        return { success: false, error: error.message };
+    }
+}
+
+// Modified login endpoint to check for verification
+const loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await userModel.findOne({ email })
 
+        if (!email || !password) {
+            return res.json({ success: false, message: 'Missing Details' });
+        }
+
+        const user = await userModel.findOne({ email });
         if (!user) {
-            return res.json({ success: false, message: "User does not exist" })
+            return res.json({ success: false, message: 'Invalid credentials' });
         }
 
-        const isMatch = await bcrypt.compare(password, user.password)
+        // Check if user is verified
+        if (!user.isVerified) {
+            // Generate new OTP for unverified user
+            const otp = Math.floor(100000 + Math.random() * 900000).toString();
+            const otpExpiry = new Date();
+            otpExpiry.setMinutes(otpExpiry.getMinutes() + 10);
 
-        if (isMatch) {
-            const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET)
-            res.json({ success: true, token })
+            user.otp = otp;
+            user.otpExpiry = otpExpiry;
+            await user.save();
+
+            // Send new OTP
+            const emailResult = await sendVerificationEmail(user.email, user.name, otp);
+            
+            const responseData = {
+                success: false,
+                message: 'Your email is not verified. A new OTP has been sent to your email.',
+                requireVerification: true,
+                userId: user._id
+            };
+            
+            if (emailResult.previewUrl) {
+                responseData.previewUrl = emailResult.previewUrl;
+            }
+
+            return res.json(responseData);
         }
-        else {
-            res.json({ success: false, message: "Invalid credentials" })
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.json({ success: false, message: 'Invalid credentials' });
         }
+
+        const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET);
+        res.json({ success: true, token });
+
     } catch (error) {
-        console.log(error)
-        res.json({ success: false, message: error.message })
+        console.log(error);
+        res.json({ success: false, message: error.message });
     }
 }
 
@@ -342,10 +535,11 @@ const verifyStripe = async (req, res) => {
     }
 
 }
-
 export {
     loginUser,
     registerUser,
+    verifyEmail,
+    resendOTP,
     getProfile,
     updateProfile,
     bookAppointment,
